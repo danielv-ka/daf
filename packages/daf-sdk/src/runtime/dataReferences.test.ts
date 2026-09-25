@@ -77,6 +77,24 @@ describe('resolveDataReferences', () => {
   });
 });
 
+describe('resolveDataReferences with several readers', () => {
+  it('passes when every model can read the file', async () => {
+    const r = await resolveDataReferences(`See $${PNG_ID}`, { ...base, models: ['claude-sonnet-5', 'kimi-k3'] });
+    expect(r.attachmentMessages).toHaveLength(1);
+  });
+
+  it('names the model that cannot read it', async () => {
+    await expect(resolveDataReferences(`See $${PDF_ID}`, { ...base, models: ['claude-sonnet-5', 'grok-4'] }))
+      .rejects.toThrow(/grok-4 can't read "report.pdf"/);
+  });
+
+  it('accepts any readable type when no reader is known yet', async () => {
+    const r = await resolveDataReferences(`See $${PDF_ID}`, { ...base, models: [] });
+    expect(r.attachmentMessages).toHaveLength(1);
+    await expect(resolveDataReferences(`See $${XLSX_ID}`, { ...base, models: [] })).rejects.toThrow(DataReferenceError);
+  });
+});
+
 describe('dataReferenceSupport', () => {
   it('matches what each provider accepts as a plain file part', () => {
     expect(dataReferenceSupport('claude-sonnet-5', 'application/pdf')).toBe('file');

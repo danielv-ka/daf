@@ -26,6 +26,7 @@ import {
   getPreferNativeToolCallInstructions,
 } from './providers';
 import { calculateTokenCost } from './pricing';
+import { resolveDataReferences, dataReferenceSupport } from './dataReferences';
 import type { DAFStorageAdapter, UserProviderSettings, ExecutionContext } from './types';
 
 const DEFAULT_MAX_STEPS = 200;
@@ -52,6 +53,14 @@ export interface InterfaceDef {
   type?: 'text' | 'text+data';
 }
 
+export interface InterfaceAttachment {
+  resourceId: string;
+  name: string;
+  mediaType: string;
+  /** base64 */
+  data: string;
+}
+
 export interface InterfaceMessage {
   role: 'assistant';
   content: string;
@@ -63,6 +72,14 @@ export interface InterfaceMessage {
   participantId: string;
   participantName: string;
   isActionResult?: boolean;
+  /**
+   * Real files that belong to this room message: an attachFile result's
+   * bytes, or data resources a System step referenced as $<id>. Every
+   * participant of the room whose model can read the type gets the actual
+   * file on each of their turns (see collectRoomFiles); the visible
+   * `content` only carries a label or the text description.
+   */
+  attachments?: InterfaceAttachment[];
   durationMs?: number;
   // The exact prompt sent to the model for this turn, the room framing, the
   // action catalog, the transcript, all of it. Never shown anywhere by
@@ -190,6 +207,38 @@ function buildParticipantPrompt(
   return lines.join('\n');
 }
 
+/**
+ * The files a participant should see this turn: from rooms they belong to
+ * that allow data, once each. A file their model can read goes in as a real
+ * file part; one it can't read becomes a short note, since the room's text
+ * (an attachFile description, or a System label) is all that model can use.
+ */
+export function collectRoomFiles(
+  participant: InterfaceParticipant,
+  allInterfaces: InterfaceDef[],
+  history: InterfaceMessage[],
+): any[] {
+  const dataRooms = new Set(
+    allInterfaces.filter((i) => i.type !== 'text' && participant.interfaceIds.includes(i.id)).map((i) => i.id),
+  );
+  const seen = new Set<string>();
+  const parts: any[] = [];
+  for (const m of history) {
+    if (!m.attachments?.length || !dataRooms.has(m.interfaceId)) continue;
+    for (const a of m.attachments) {
+      if (seen.has(a.resourceId)) continue;
+      seen.add(a.resourceId);
+      const label = `[${m.interfaceName}] Attached file: ${a.name}`;
+      if (dataReferenceSupport(participant.model, a.mediaType) === 'file') {
+        parts.push({ type: 'text', text: label }, { type: 'file', data: a.data, mediaType: a.mediaType });
+      } else {
+        parts.push({ type: 'text', text: `${label} (${a.mediaType}). Your model can't view this file type, so rely on what the room says about it.` });
+      }
+    }
+  }
+  return parts;
+}
+
 function buildInterfaceActionMsg(
   ar: ActionResult,
   participant: InterfaceParticipant,
@@ -197,7 +246,16 @@ function buildInterfaceActionMsg(
   durationMs: number,
   debugPrompt: string
 ): InterfaceMessage {
+  // attachFile hands back the real bytes (data.rawContent, injectLive) when
+  // the host decided they can stay in the conversation; in a room that
+  // allows data they become part of the room, for every participant.
+  const d: any = ar.data;
+  const attachments: InterfaceAttachment[] | undefined =
+    iface.type !== 'text' && d?.injectLive && d?.rawContent && d?.mediaType
+      ? [{ resourceId: d.id, name: d.name || d.id, mediaType: d.mediaType, data: d.rawContent }]
+      : undefined;
   return {
+    ...(attachments ? { attachments } : {}),
     role: 'assistant',
     content: formatActionResult(ar),
     timestamp: new Date().toISOString(),
@@ -285,13 +343,42 @@ export async function executeInterfacesProcess(
         if (idx >= targetSteps.length) continue; // nothing left for System to say here, skip silently
         const rawPrompt = targetSteps[idx].prompt || '';
         nextStepIndexPerInterface.set(iface.id, idx + 1);
-        const content = await substituteVariables(rawPrompt, userId, adapter, processId);
+        let content = await substituteVariables(rawPrompt, userId, adapter, processId);
+
+        // $<resource id> references to data resources: the actual file joins
+        // the room. Checked against every model in the room up front, so a
+        // participant that can't read it fails the run with a clear message
+        // instead of silently missing the file (see dataReferences.ts).
+        const roomModels = participants
+          .filter((p) => p.model !== 'system' && iface.participantIds.includes(p.id))
+          .map((p) => p.model);
+        const refs = await resolveDataReferences(content, { userId, adapter, models: roomModels, processId });
+        let attachments: InterfaceAttachment[] | undefined;
+        if (refs.attachmentMessages.length > 0) {
+          if (iface.type === 'text') {
+            throw new Error(`"${iface.name}" is a Text room, so the file referenced in its System step can't be sent. Switch the room to Text + Data.`);
+          }
+          attachments = [];
+          content = refs.text;
+          for (const am of refs.attachmentMessages) {
+            const filePart = (am.content as any[]).find((p) => p.type === 'file');
+            const textPart = (am.content as any[]).find((p) => p.type === 'text');
+            if (filePart) {
+              const row = await adapter.db.resource.findFirst({ where: { id: am.sourceResourceId, userId } });
+              attachments.push({ resourceId: am.sourceResourceId, name: row?.name || am.sourceResourceId, mediaType: filePart.mediaType, data: filePart.data });
+            } else if (textPart) {
+              // A text file: inline it into the room, every model reads text.
+              content = `${content}\n\n${textPart.text}`;
+            }
+          }
+        }
 
         messages.push({
           role: 'assistant', content, timestamp: new Date().toISOString(),
           source: 'interfaces',
           interfaceId: iface.id, interfaceName: iface.name,
           participantId: participant.id, participantName: participant.name,
+          ...(attachments && attachments.length > 0 ? { attachments } : {}),
         });
         await adapter.db.run.update({ where: { id: runId }, data: { messages } });
         adapter.emitRunUpdate(runId, { type: 'messages-update', messages, runId });
@@ -343,7 +430,12 @@ export async function executeInterfacesProcess(
         lastPrompt = prompt;
         let ourOwnTools: ReturnType<typeof buildActionTools> = {};
         let tools: any = undefined;
-        let promptMessages: Array<{ role: 'user'; content: string }> = [{ role: 'user', content: prompt }];
+        // Files from this participant's data rooms go first, then the prompt
+        // (which ends with "you are now being asked to speak in ...").
+        const fileParts = collectRoomFiles(participant, interfaces, messages);
+        let promptMessages: Array<{ role: 'user'; content: any }> = [
+          { role: 'user', content: fileParts.length > 0 ? [...fileParts, { type: 'text', text: prompt }] : prompt },
+        ];
         if (roomAllowsActions) {
           const nativeReplaced = getNativeReplacedActions(participant.model);
           const excludeVariants = [...nativeReplaced, ...getExcludedActions()];

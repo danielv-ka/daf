@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Real files in Text + Data Interfaces rooms.** A room message can now carry the actual
+  file (`InterfaceMessage.attachments`): an attachFile result's bytes (when the host returns
+  them live), or data resources a System step references as `$<resource id>`. On each turn,
+  every participant of a Text + Data room gets those files as native file parts when its
+  model can read the type, or a short note otherwise (the room's text description still
+  applies). Text rooms never carry files.
+- `resolveDataReferences` accepts `models` to check several readers at once (every
+  participant of a room); the error names the model that can't read the file.
+
+### Changed
+- A `$<resource id>` in a System step now fails the run with a clear message when the room
+  is Text only, or when any participant's model can't read the file, instead of the file
+  silently not reaching participants.
+- The "can't read this type" error for images and PDFs no longer suggests attachFile, which
+  fails for the same model; it suggests picking a model that can read the type.
+
 ## [2.0.1] - 2026-09-25
 
 ### Changed

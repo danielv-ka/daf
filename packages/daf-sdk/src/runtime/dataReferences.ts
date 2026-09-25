@@ -59,6 +59,13 @@ export function dataReferenceSupport(model: string, mediaType: string): 'file' |
   return null;
 }
 
+/** Whether any supported model could read `mediaType`, and how. */
+function mediaTypeKind(mediaType: string): 'file' | 'text' | null {
+  if (TEXT_MEDIA_TYPES.has(mediaType) || mediaType.startsWith('text/')) return 'text';
+  if (mediaType.startsWith('image/') || mediaType === 'application/pdf') return 'file';
+  return null;
+}
+
 async function accessibleResourceIds(
   adapter: DAFStorageAdapter,
   userId: string,
@@ -89,7 +96,14 @@ export async function resolveDataReferences(
   options: {
     userId: string;
     adapter: DAFStorageAdapter;
-    model: string;
+    /** The model that will read the prompt. */
+    model?: string;
+    /**
+     * Several models that will all read it (e.g. every participant of an
+     * Interfaces room). Each must be able to read the file, and the error
+     * names the one that can't. Takes precedence over `model`.
+     */
+    models?: string[];
     processId?: string;
     parentProcessIds?: string[];
     /** Resource ids accessible in this context beyond the process's own (e.g. chat-attached ones). */
@@ -105,7 +119,7 @@ export async function resolveDataReferences(
   const candidates = [...new Set([...text.matchAll(REFERENCE_PATTERN)].map((m) => m[1]))];
   if (candidates.length === 0) return { text, attachmentMessages: [] };
 
-  const { userId, adapter, model } = options;
+  const { userId, adapter } = options;
   const rows = await adapter.db.resource.findMany({
     where: { userId, type: 'data', id: { in: candidates } },
   });
@@ -134,12 +148,18 @@ export async function resolveDataReferences(
     if (bytes.byteLength > MAX_FILE_BYTES) {
       throw new DataReferenceError(`"${row.name}" is ${(bytes.byteLength / 1024 / 1024).toFixed(1)}MB, over the ${MAX_FILE_BYTES / 1024 / 1024}MB limit for sending a file with a prompt.`);
     }
-    const support = dataReferenceSupport(model, mediaType);
-    if (!support) {
-      const hint = mediaType.includes('spreadsheet') || mediaType.includes('excel')
-        ? ' No model reads spreadsheets directly: refer to it by name instead and let the model use attachFile, which reads it exactly.'
-        : '';
-      throw new DataReferenceError(`${model} can't read "${row.name}" (${mediaType}) directly.${hint || ' Pick a different model, or refer to it by name and let the model use attachFile.'}`);
+    const readers = options.models ?? (options.model ? [options.model] : []);
+    let support: 'file' | 'text' | null = null;
+    for (const reader of readers.length > 0 ? readers : [undefined]) {
+      // No reader known yet: accept anything some model could read.
+      const s = reader ? dataReferenceSupport(reader, mediaType) : mediaTypeKind(mediaType);
+      if (!s) {
+        const hint = mediaType.includes('spreadsheet') || mediaType.includes('excel')
+          ? ' No model reads spreadsheets directly: refer to it by name instead and let the model use attachFile, which reads it exactly.'
+          : ' Pick a model that can read this type (for example Claude, GPT, or Gemini).';
+        throw new DataReferenceError(`${reader ?? 'No model'} can't read "${row.name}" (${mediaType}) directly.${hint}`);
+      }
+      support = s;
     }
 
     const label = `[Attached file: ${row.name}]`;
