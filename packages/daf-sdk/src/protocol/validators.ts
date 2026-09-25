@@ -54,6 +54,12 @@ import {
   translateParamsSchema,
   directiveParamsSchema,
   attachFileParamsSchema,
+  readDataParamsSchema,
+  writeDataParamsSchema,
+  createDataParamsSchema,
+  deleteDataParamsSchema,
+  renameDataParamsSchema,
+  duplicateDataParamsSchema,
 } from './schemas';
 import { ACTION_TYPES, DIRECT_APPLY_EDITOR_ACTIONS } from './constants';
 import type {
@@ -276,6 +282,12 @@ export const actionParamSchemas: Partial<Record<string, ZodType>> = {
   [ACTION_TYPES.RENAME_MD_FILE]: renameMdFileParamsSchema,
   [ACTION_TYPES.DUPLICATE_MD_FILE]: duplicateMdFileParamsSchema,
   [ACTION_TYPES.ATTACH_FILE]: attachFileParamsSchema,
+  [ACTION_TYPES.READ_DATA]: readDataParamsSchema,
+  [ACTION_TYPES.WRITE_DATA]: writeDataParamsSchema,
+  [ACTION_TYPES.CREATE_DATA]: createDataParamsSchema,
+  [ACTION_TYPES.DELETE_DATA]: deleteDataParamsSchema,
+  [ACTION_TYPES.RENAME_DATA]: renameDataParamsSchema,
+  [ACTION_TYPES.DUPLICATE_DATA]: duplicateDataParamsSchema,
 };
 
 /**

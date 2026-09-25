@@ -88,6 +88,12 @@ export const ACTION_TYPES = {
   RENAME_MD_FILE: 'renameMdFile',
   DUPLICATE_MD_FILE: 'duplicateMdFile',
   ATTACH_FILE: 'attachFile',
+  READ_DATA: 'readData',
+  WRITE_DATA: 'writeData',
+  CREATE_DATA: 'createData',
+  DELETE_DATA: 'deleteData',
+  RENAME_DATA: 'renameData',
+  DUPLICATE_DATA: 'duplicateData',
 } as const;
 
 /**
@@ -123,6 +129,7 @@ export const RESOURCE_TYPES = {
   MD_FILE: 'md_file',
   NOTION_DATABASE: 'notion_database',
   MONGODB_COLLECTION: 'mongodb_collection',
+  DATA: 'data',
 } as const;
 
 /**

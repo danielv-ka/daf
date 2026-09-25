@@ -186,3 +186,45 @@ describe('parseDafFile / validateDafFile dispatch', () => {
     expect(validateDafFile({ dafVersion: DAF_V2_VERSION, dafType: 'nonsense', processes: [] }).valid).toBe(false);
   });
 });
+
+describe('portable resource references', () => {
+  const dataResource = {
+    name: 'chart.png', type: 'data', url: 'data/chart', isGlobal: false,
+    ref: 'src_res_1', mediaType: 'image/png', content: 'cG5n',
+  };
+  const processWithRefs = {
+    ...sampleProcess,
+    name: 'Uses a file',
+    resourceRefs: ['src_res_1'],
+    steps: [{ type: 'prompt', prompt: 'Describe $src_res_1' }],
+  };
+  const manifest = (resources: any[], processes: any[] = [processWithRefs]) => ({
+    dafVersion: DAF_V2_VERSION, dafType: 'manifest', variables: { user: {}, system: {} },
+    resources, actions: [], processes,
+  });
+
+  it('keeps a data resource with its content, media type and ref through parsing', () => {
+    const parsed = parseDafFile(manifest([dataResource])) as any;
+    expect(parsed.resources[0]).toMatchObject({ type: 'data', ref: 'src_res_1', mediaType: 'image/png', content: 'cG5n' });
+  });
+
+  it("keeps a process's resourceRefs through parsing", () => {
+    const parsed = parseDafFile(manifest([dataResource])) as any;
+    expect(parsed.processes[0].resourceRefs).toEqual(['src_res_1']);
+  });
+
+  it('accepts a data resource without content (e.g. over a size limit)', () => {
+    const { content, ...noContent } = dataResource;
+    expect(validateManifestFile(manifest([noContent])).valid).toBe(true);
+  });
+
+  it('rejects a data resource without a media type', () => {
+    const { mediaType, ...noType } = dataResource;
+    expect(validateManifestFile(manifest([noType])).valid).toBe(false);
+  });
+
+  it('still accepts manifests without refs (files exported before they existed)', () => {
+    const old = manifest([{ name: 'Doc', type: 'google_doc', url: 'https://docs.google.com/document/d/x', isGlobal: false }], [sampleProcess]);
+    expect(validateManifestFile(old).valid).toBe(true);
+  });
+});

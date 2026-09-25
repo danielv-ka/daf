@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-09-25
+
+### Added
+- **Data resources in manifests.** `data` is now a valid manifest resource type, with
+  `mediaType` (required) and `content` (base64, optional, e.g. left out over a size limit).
+- **Portable resource references in manifests.** A manifest resource can carry `ref`, its id
+  in the exporting account, and a process can carry `resourceRefs`, the refs of the resources
+  attached to it. An importer maps refs to the new ids, so it can re-attach resources to
+  processes and rewrite `$<resource id>` references in step text. All three fields are
+  optional, so older manifests still validate.
+
+### Fixed
+- **The six data actions were missing from `ACTION_TYPES`** (`readData`, `writeData`,
+  `createData`, `deleteData`, `renameData`, `duplicateData`). Any manifest listing them failed
+  validation, and they never had native tools. They now have parameter schemas matching the
+  runtime's checks, and native tools with their catalog descriptions.
+
 ## [2.1.0] - 2026-09-25
 
 ### Added

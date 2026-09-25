@@ -24,10 +24,10 @@ describe('buildActionTools', () => {
     expect(Object.keys(tools)).not.toContain('crawl');
   });
 
-  it('excludes the *Data variants (no schema, not in ACTION_TYPES)', () => {
+  it('includes the *Data variants, like every other action with a schema', () => {
     const tools = buildActionTools();
     for (const variant of ['readData', 'writeData', 'createData', 'deleteData', 'renameData', 'duplicateData']) {
-      expect(Object.keys(tools)).not.toContain(variant);
+      expect(Object.keys(tools)).toContain(variant);
     }
   });
 

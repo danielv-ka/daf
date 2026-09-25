@@ -28,6 +28,7 @@ export const resourceSchema = z.object({
     RESOURCE_TYPES.MD_FILE,
     RESOURCE_TYPES.NOTION_DATABASE,
     RESOURCE_TYPES.MONGODB_COLLECTION,
+    RESOURCE_TYPES.DATA,
   ]),
   url: z.string().min(1, 'Resource URL or path is required'),
   isGlobal: z.boolean(),
@@ -102,6 +103,9 @@ export const processSchema = z.object({
   ]),
   stopProcessKeyword: z.string().optional(),
   resources: z.array(resourceSchema).optional(),
+  // Manifests only: the `ref` of each manifest resource attached to this
+  // process, so an import can re-attach them (see manifestResourceSchema).
+  resourceRefs: z.array(z.string().min(1)).optional(),
   steps: z.array(stepSchema).min(1, 'Process must have at least one step'),
 }).refine(
   (data) => {
@@ -146,7 +150,20 @@ export const manifestVariablesSchema = z.object({
 
 export const manifestResourceSchema = resourceSchema.extend({
   requiredIntegration: z.string().optional(),
-});
+  // The resource's id in the exporting account. Ids differ between accounts,
+  // so anything that pointed at this resource by id (a process's attached
+  // resources, a `$<id>` reference in step text) is exported against this
+  // ref and remapped to the new id on import.
+  ref: z.string().min(1).optional(),
+  // `data` resources only: the stored file itself (base64) and its media type.
+  // content may be left out (e.g. over a size limit); an importer then can't
+  // recreate the file and should say so.
+  mediaType: z.string().min(1).optional(),
+  content: z.string().optional(),
+}).refine(
+  (r) => r.type !== RESOURCE_TYPES.DATA || !!r.mediaType,
+  { error: 'A data resource needs a mediaType' },
+);
 
 export const manifestScheduleSchema = z.object({
   name: z.string().min(1, 'Schedule name is required'),
@@ -454,6 +471,38 @@ export const duplicateMdFileParamsSchema = z.object({
 
 export const attachFileParamsSchema = z.object({
   id: z.string().min(1, 'id is required'),
+});
+
+// Data resource actions. Mirror the runtime's isValid* checks for each
+// variant (actionProcessor.ts); content is base64.
+export const readDataParamsSchema = z.object({
+  id: z.string().min(1, 'id is required'),
+});
+
+export const writeDataParamsSchema = z.object({
+  id: z.string().min(1, 'id is required'),
+  content: z.string().min(1, 'content is required'),
+  mediaType: z.string().optional(),
+});
+
+export const createDataParamsSchema = z.object({
+  name: z.string().min(1, 'name is required'),
+  content: z.string().min(1, 'content is required'),
+  mediaType: z.string().min(1, 'mediaType is required'),
+});
+
+export const deleteDataParamsSchema = z.object({
+  id: z.string().min(1, 'id is required'),
+});
+
+export const renameDataParamsSchema = z.object({
+  id: z.string().min(1, 'id is required'),
+  newName: z.string().min(1, 'newName is required'),
+});
+
+export const duplicateDataParamsSchema = z.object({
+  id: z.string().min(1, 'id is required'),
+  newName: z.string().min(1, 'newName is required'),
 });
 
 export const editorActionBaseParamsSchema = z.object({

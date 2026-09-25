@@ -69,6 +69,12 @@ export interface DAFManifestVariables {
  */
 export interface DAFManifestResource extends DAFResource {
   requiredIntegration?: string;
+  /** The resource's id in the exporting account; step text and process attachments refer to it. */
+  ref?: string;
+  /** `data` resources only. */
+  mediaType?: string;
+  /** `data` resources only: the file, base64. May be omitted (e.g. over a size limit). */
+  content?: string;
 }
 
 export type ScheduleInterval =
@@ -159,6 +165,8 @@ export interface DAFProcess {
   processType: ProcessType;
   stopProcessKeyword?: string;
   resources?: DAFResource[];
+  /** Manifests only: the `ref`s of the manifest resources attached to this process. */
+  resourceRefs?: string[];
   steps: DAFStep[];
 }
 
