@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-09-25
+
+### Changed
+- Package metadata now points to the public repository, github.com/danielv-ka/daf.
+- Documentation and code comments cleaned up for the public release. No behavior changes.
+
 ## [2.0.0] - 2026-09-25
 
 First public release of this repository. Earlier versions were developed in a private
