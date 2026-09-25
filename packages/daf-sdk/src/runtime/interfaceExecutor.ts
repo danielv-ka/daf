@@ -1,0 +1,468 @@
+// Interfaces v0.1: a multi-participant, multi-room process type. Originally
+// built host-side in an application while the design was still settling; moved into
+// the SDK once the shape proved out, so every daf-sdk host can offer it, not
+// just the one that happened to build it first. A host still owns its own
+// Process/Run schema (this reads/writes through the loose `adapter.db`
+// passthrough, exactly like chatExecutor.ts does for its own extra columns)
+// and its own per-model action handlers (e.g. attachFile), the engine only
+// owns the turn-taking, prompt-building and action-loop logic, which has no
+// host-specific dependency at all.
+import { generateText } from 'ai';
+import {
+  canUserAffordApiCall,
+  checkAndUpdateCostLimit,
+  substituteVariables,
+  formatActionResult,
+} from './executor';
+import { processMessageActions, type ActionResult } from './actionProcessor';
+import { buildActionTools, annotateActionCatalogWithToolNotes } from './actionTools';
+import {
+  getProviderFromModel,
+  getModelProvider,
+  getNativeReplacedActions,
+  getExcludedActions,
+  buildNativeProviderTools,
+  formatNativeProviderResult,
+  getPreferNativeToolCallInstructions,
+} from './providers';
+import { calculateTokenCost } from './pricing';
+import type { DAFStorageAdapter, UserProviderSettings, ExecutionContext } from './types';
+
+const DEFAULT_MAX_STEPS = 200;
+const MAX_ACTIONS_PER_TURN = 5;
+const PASS_KEYWORD = /^\s*PASS\s*$/i;
+
+export interface InterfaceParticipant {
+  id: string;
+  name: string;
+  model: string; // 'system' for Participant 0 (the process engine), a real model id otherwise
+  interfaceIds: string[];
+  starterPrompt?: string;
+}
+
+export interface InterfaceDef {
+  id: string;
+  name: string;
+  participantIds: string[];
+  // 'text+data' (the default when absent, so every process built before this
+  // field existed keeps behaving exactly as before) offers the full action
+  // catalog, including attachFile. 'text' rooms never see or can call any
+  // action at all, no catalog text, no tools, no inner action loop, kept
+  // as a cheap, purely-conversational option for rooms that don't need it.
+  type?: 'text' | 'text+data';
+}
+
+export interface InterfaceMessage {
+  role: 'assistant';
+  content: string;
+  timestamp: string;
+  source: 'interfaces';
+  model?: string;
+  interfaceId: string;
+  interfaceName: string;
+  participantId: string;
+  participantName: string;
+  isActionResult?: boolean;
+  durationMs?: number;
+  // The exact prompt sent to the model for this turn, the room framing, the
+  // action catalog, the transcript, all of it. Never shown anywhere by
+  // default; a host UI can surface it behind a toggle so a user can actually
+  // inspect what a participant was told, instead of that only being knowable
+  // by reading source code.
+  debugPrompt?: string;
+}
+
+function isUsingUserKey(model: string, userSettings: UserProviderSettings | null): boolean {
+  if (!userSettings) return false;
+  const provider = getProviderFromModel(model);
+  if (provider === 'openai' && userSettings.useOpenaiKey) return true;
+  if (provider === 'anthropic' && userSettings.useAnthropicKey) return true;
+  if (provider === 'mistral' && userSettings.useMistralKey) return true;
+  if (provider === 'google' && userSettings.useGoogleKey) return true;
+  if (provider === 'xai' && userSettings.useXaiKey) return true;
+  if (provider === 'deepseek' && userSettings.useDeepseekKey) return true;
+  return false;
+}
+
+// The order a (participant, interface) pair is prompted in is generated as a
+// simple repeating sequence, computed once up front. Random draws a fresh pair
+// each turn instead, since there is no fixed sequence to repeat.
+function buildSequence(
+  participants: InterfaceParticipant[],
+  interfaces: InterfaceDef[],
+  order: 'RANDOM' | 'ROUND_ROBIN_INTERFACE_FIRST' | 'ROUND_ROBIN_PARTICIPANT_FIRST'
+): Array<{ participant: InterfaceParticipant; iface: InterfaceDef }> | null {
+  if (order === 'RANDOM') return null; // computed per turn instead
+
+  const sequence: Array<{ participant: InterfaceParticipant; iface: InterfaceDef }> = [];
+  const byId = new Map(participants.map((p) => [p.id, p]));
+
+  if (order === 'ROUND_ROBIN_INTERFACE_FIRST') {
+    for (const iface of interfaces) {
+      for (const pid of iface.participantIds) {
+        const participant = byId.get(pid);
+        if (participant) sequence.push({ participant, iface });
+      }
+    }
+  } else {
+    for (const participant of participants) {
+      for (const ifaceId of participant.interfaceIds) {
+        const iface = interfaces.find((i) => i.id === ifaceId);
+        if (iface) sequence.push({ participant, iface });
+      }
+    }
+  }
+  return sequence;
+}
+
+function pickRandomPair(
+  participants: InterfaceParticipant[],
+  interfaces: InterfaceDef[]
+): { participant: InterfaceParticipant; iface: InterfaceDef } | null {
+  const pairs: Array<{ participant: InterfaceParticipant; iface: InterfaceDef }> = [];
+  for (const participant of participants) {
+    for (const ifaceId of participant.interfaceIds) {
+      const iface = interfaces.find((i) => i.id === ifaceId);
+      if (iface) pairs.push({ participant, iface });
+    }
+  }
+  if (pairs.length === 0) return null;
+  return pairs[Math.floor(Math.random() * pairs.length)];
+}
+
+// Builds the single user-role prompt sent for one participant's turn: the
+// interface convention, the participant's own persona (if any), the transcript
+// of every interface they belong to (tagged so they can tell rooms apart), and
+// the instruction naming which interface this specific turn targets. One plain
+// text block avoids any need to reconstruct per-participant role alternation
+// across a conversation that, from each participant's own view, is really N
+// interleaved conversations at once.
+function buildParticipantPrompt(
+  participant: InterfaceParticipant,
+  targetInterface: InterfaceDef,
+  allInterfaces: InterfaceDef[],
+  history: InterfaceMessage[],
+  // null for a 'text' room: no actions section at all, not even a mention
+  // that actions exist, the model never knows they were an option here.
+  actionCatalogText: string | null
+): string {
+  const ownInterfaces = allInterfaces.filter((i) => participant.interfaceIds.includes(i.id));
+  const ownInterfaceNames = ownInterfaces.map((i) => i.name).join(', ');
+
+  const transcript = history
+    .filter((m) => participant.interfaceIds.includes(m.interfaceId))
+    .map((m) => `[${m.interfaceName}] ${m.participantName}: ${m.content}`)
+    .join('\n');
+
+  const lines: string[] = [];
+  lines.push(
+    `You are "${participant.name}", one of several participants in a multi-room conversation. ` +
+    `You are a member of these interfaces (rooms): ${ownInterfaceNames}. ` +
+    `Each line below is tagged with the room it was said in, in the form "[Room] Speaker: message". ` +
+    `You can only see rooms you belong to.`
+  );
+  if (participant.starterPrompt?.trim()) {
+    lines.push(`\nYour own instructions: ${participant.starterPrompt.trim()}`);
+  }
+  lines.push(
+    transcript
+      ? `\nConversation so far:\n${transcript}`
+      : `\nConversation so far: (nothing said yet)`
+  );
+  if (actionCatalogText !== null) {
+    lines.push(
+      `\nYou also have access to actions. To call one, reply with ONLY a JSON object of the form ` +
+      `{"type":"action","variant":"<name>","parameters":{...}}, nothing else. If you already called one and ` +
+      `its result appears above, use that result rather than calling it again.\n\n${actionCatalogText}`
+    );
+    lines.push(
+      `\nYou are now being asked to speak in "${targetInterface.name}". Reply with EXACTLY ONE of: (a) a single ` +
+      `action-call JSON object, (b) only the message you want to add to that room, nothing else, no tags, no ` +
+      `room name, or (c) if you have nothing to add this round, exactly: PASS`
+    );
+  } else {
+    lines.push(
+      `\nYou are now being asked to speak in "${targetInterface.name}". Reply with EXACTLY ONE of: (a) only the ` +
+      `message you want to add to that room, nothing else, no tags, no room name, or (b) if you have nothing to ` +
+      `add this round, exactly: PASS`
+    );
+  }
+  return lines.join('\n');
+}
+
+function buildInterfaceActionMsg(
+  ar: ActionResult,
+  participant: InterfaceParticipant,
+  iface: InterfaceDef,
+  durationMs: number,
+  debugPrompt: string
+): InterfaceMessage {
+  return {
+    role: 'assistant',
+    content: formatActionResult(ar),
+    timestamp: new Date().toISOString(),
+    source: 'interfaces',
+    isActionResult: true,
+    participantId: participant.id,
+    participantName: participant.name,
+    // Real interfaceId, same as a dialogue message, becomes part of this room's
+    // shared history for every participant, not just the one who called it: an
+    // action result that only the caller remembers can't be recalled later or
+    // verified by the rest of the room.
+    interfaceId: iface.id,
+    interfaceName: iface.name,
+    model: participant.model,
+    durationMs,
+    debugPrompt,
+  };
+}
+
+export async function executeInterfacesProcess(
+  processId: string,
+  runId: string,
+  userId: string,
+  adapter: DAFStorageAdapter,
+  model: string,
+  resourceIds: string[],
+  // Interfaces has one model per PARTICIPANT, not one per run like every other
+  // engine in this SDK, so a single customActionHandler (fixed at call time)
+  // can't work here. The host gets a factory instead, called fresh for
+  // whichever model is acting this turn.
+  customActionHandlerFactory?: (model: string) => ExecutionContext['customActionHandler']
+): Promise<void> {
+  let run: any;
+
+  try {
+    const process = await adapter.db.process.findFirst({ where: { id: processId, userId } });
+    if (!process) throw new Error(`Process ${processId} not found`);
+    run = await adapter.db.run.findUnique({ where: { id: runId } });
+    if (!run) throw new Error(`Run ${runId} not found`);
+
+    if (resourceIds.length > 0) {
+      await adapter.db.process.update({ where: { id: processId }, data: { resourceIds } });
+    }
+
+    const participants = ((process.interfaceParticipants as any) || []) as InterfaceParticipant[];
+    const interfaces = ((process.interfaceDefs as any) || []) as InterfaceDef[];
+    const order = (process.interfaceExecutionOrder as any) || 'ROUND_ROBIN_INTERFACE_FIRST';
+    const maxSteps = process.interfaceMaxSteps || DEFAULT_MAX_STEPS;
+    const stopKeyword = process.stopProcessKeyword?.trim() || null;
+
+    if (participants.length === 0 || interfaces.length === 0) {
+      throw new Error('An interfaces process needs at least one participant and one interface');
+    }
+
+    const steps = Array.isArray(process.steps) ? (process.steps as any[]) : [];
+    let nextStepIndexPerInterface = new Map<string, number>(interfaces.map((i) => [i.id, 0]));
+
+    const decryptedSettings = await adapter.getUser(userId);
+
+    // Resolved once, not per-turn: the transcript is rebuilt from scratch every
+    // call, and substituteVariables's $VAR regex would needlessly re-scan it and
+    // could false-match a participant's own dialogue (e.g. literal "$Total").
+    const actionCatalogText = await substituteVariables(
+      `$DESC_ALL_ACTIONS\n\n---\n\nAvailable resources:\n$RESOURCES`,
+      userId,
+      adapter,
+      processId
+    );
+
+    const messages: any[] = Array.isArray(run.messages) ? [...run.messages] : [];
+    const sequence = buildSequence(participants, interfaces, order);
+    let seqIndex = 0;
+    let accInputTokens = 0, accOutputTokens = 0, accTotalTokens = 0, accCachedTokens = 0, accReasoningTokens = 0;
+    let stopped = false;
+
+    for (let step = 0; step < maxSteps && !stopped; step++) {
+      const pair = sequence ? sequence[seqIndex % sequence.length] : pickRandomPair(participants, interfaces);
+      if (sequence) seqIndex++;
+      if (!pair) break;
+      const { participant, iface } = pair;
+
+      if (participant.model === 'system') {
+        const idx = nextStepIndexPerInterface.get(iface.id) ?? 0;
+        const targetSteps = steps.filter((s) => s.targetInterfaceId === iface.id);
+        if (idx >= targetSteps.length) continue; // nothing left for System to say here, skip silently
+        const rawPrompt = targetSteps[idx].prompt || '';
+        nextStepIndexPerInterface.set(iface.id, idx + 1);
+        const content = await substituteVariables(rawPrompt, userId, adapter, processId);
+
+        messages.push({
+          role: 'assistant', content, timestamp: new Date().toISOString(),
+          source: 'interfaces',
+          interfaceId: iface.id, interfaceName: iface.name,
+          participantId: participant.id, participantName: participant.name,
+        });
+        await adapter.db.run.update({ where: { id: runId }, data: { messages } });
+        adapter.emitRunUpdate(runId, { type: 'messages-update', messages, runId });
+
+        if (stopKeyword && content.includes(stopKeyword)) stopped = true;
+        continue;
+      }
+
+      const customActionHandler = customActionHandlerFactory?.(participant.model);
+      const modelProvider = getModelProvider(participant.model, decryptedSettings);
+      const executionContext: ExecutionContext = {
+        model: participant.model,
+        modelProvider,
+        customActionHandler,
+        onTokenUsage: async (input, output, total, cached, reasoning) => {
+          accInputTokens += input; accOutputTokens += output; accTotalTokens += total;
+          accCachedTokens += cached; accReasoningTokens += reasoning;
+          const c = isUsingUserKey(participant.model, decryptedSettings) ? 0 : calculateTokenCost(participant.model, input, output, cached, reasoning);
+          await checkAndUpdateCostLimit(userId, c, total, adapter);
+        },
+      };
+
+      let finalText: string | null = null;
+      let passedTurn = false;
+      let lastPrompt = '';
+      const turnStart = Date.now();
+      // A 'text' room never sees the action catalog and never gets tools,
+      // one plain generateText call, its reply is final (PASS or the line),
+      // no inner loop needed at all since there's nothing to loop on.
+      const roomAllowsActions = iface.type !== 'text';
+
+      for (let inner = 0; inner < (roomAllowsActions ? MAX_ACTIONS_PER_TURN : 1); inner++) {
+        const affordCheck = await canUserAffordApiCall(userId, adapter);
+        if (!affordCheck.allowed) {
+          await adapter.db.run.update({
+            where: { id: runId },
+            data: { status: 'ERROR', completedAt: new Date(), error: affordCheck.failureReason },
+          });
+          adapter.emitRunUpdate(runId, { type: 'status-update', status: 'ERROR', messages, runId, errorReason: affordCheck.failureReason });
+          adapter.emitRunListUpdate(userId, { id: runId, status: 'ERROR' });
+          return;
+        }
+
+        // Rebuilt fresh each inner iteration: `messages` already includes any
+        // action-result messages pushed earlier this turn, since they carry a
+        // real interfaceId and pass this same history filter like any other
+        // room message.
+        const prompt = buildParticipantPrompt(participant, iface, interfaces, messages, roomAllowsActions ? actionCatalogText : null);
+        lastPrompt = prompt;
+        let ourOwnTools: ReturnType<typeof buildActionTools> = {};
+        let tools: any = undefined;
+        let promptMessages: Array<{ role: 'user'; content: string }> = [{ role: 'user', content: prompt }];
+        if (roomAllowsActions) {
+          const nativeReplaced = getNativeReplacedActions(participant.model);
+          const excludeVariants = [...nativeReplaced, ...getExcludedActions()];
+          ourOwnTools = buildActionTools(excludeVariants.length > 0 ? { excludeVariants } : undefined);
+          tools = {
+            ...ourOwnTools,
+            ...buildNativeProviderTools(participant.model),
+          };
+          promptMessages = annotateActionCatalogWithToolNotes(promptMessages, Object.keys(ourOwnTools));
+        }
+        const llmResult = await generateText({
+          model: modelProvider,
+          messages: promptMessages,
+          ...(roomAllowsActions ? { tools, instructions: getPreferNativeToolCallInstructions(participant.model) } : {}),
+          abortSignal: AbortSignal.timeout(120_000),
+        });
+
+        const usage = llmResult.usage;
+        const inputTokens = usage?.inputTokens || 0;
+        const outputTokens = usage?.outputTokens || 0;
+        const totalTokens = usage?.totalTokens || (inputTokens + outputTokens);
+        const cachedTokens = (usage as any)?.inputTokenDetails?.cacheReadTokens || 0;
+        const reasoningTokens = (usage as any)?.outputTokenDetails?.reasoningTokens || 0;
+        accInputTokens += inputTokens; accOutputTokens += outputTokens; accTotalTokens += totalTokens;
+        accCachedTokens += cachedTokens; accReasoningTokens += reasoningTokens;
+
+        const cost = isUsingUserKey(participant.model, decryptedSettings) ? 0 : calculateTokenCost(participant.model, inputTokens, outputTokens, cachedTokens, reasoningTokens);
+        await checkAndUpdateCostLimit(userId, cost, totalTokens, adapter);
+
+        const rawText = llmResult.text.trim();
+
+        if (!roomAllowsActions) {
+          if (PASS_KEYWORD.test(rawText)) { passedTurn = true; } else { finalText = rawText; }
+          break;
+        }
+
+        const allToolCalls = llmResult.toolCalls || [];
+        const clientToolCalls = allToolCalls.filter((tc: any) => !tc.providerExecuted);
+        const providerExecutedCalls = allToolCalls.filter((tc: any) => tc.providerExecuted);
+        const clientActions = clientToolCalls.map((tc: any) => ({ type: 'action' as const, variant: tc.toolName, parameters: tc.input }));
+        let actedThisIteration = false;
+
+        for (const call of providerExecutedCalls as any[]) {
+          const toolResult = (llmResult.toolResults || []).find((tr: any) => tr.toolCallId === call.toolCallId);
+          const formatted = formatNativeProviderResult(call.toolName, toolResult?.output);
+          const ar: ActionResult = { success: true, message: formatted };
+          messages.push(buildInterfaceActionMsg(ar, participant, iface, Date.now() - turnStart, prompt));
+          actedThisIteration = true;
+        }
+
+        // Pass clientActions whenever ANY tool call happened (even provider-executed-only),
+        // not just when clientActions is non-empty, otherwise a provider-executed-only turn
+        // falls through to processMessageActions re-scanning rawText for JSON action syntax
+        // that was never there. Mirrors chatExecutor.ts's own aiActionResult call.
+        const preParsed = allToolCalls.length > 0 ? clientActions : undefined;
+        const actionResult = await processMessageActions(rawText, userId, adapter, processId, [], executionContext, preParsed as any);
+        if (actionResult.hasActions && actionResult.actionResults.length > 0) {
+          for (const ar of actionResult.actionResults) {
+            messages.push(buildInterfaceActionMsg(ar, participant, iface, Date.now() - turnStart, prompt));
+          }
+          actedThisIteration = true;
+        }
+
+        if (actedThisIteration) {
+          await adapter.db.run.update({ where: { id: runId }, data: { messages } });
+          adapter.emitRunUpdate(runId, { type: 'messages-update', messages, runId });
+          continue;
+        }
+
+        if (PASS_KEYWORD.test(rawText)) { passedTurn = true; } else { finalText = rawText; }
+        break;
+      }
+
+      if (passedTurn) {
+        adapter.log.info(`[Interfaces] "${participant.name}" passed on "${iface.name}"`);
+        continue;
+      }
+      if (finalText === null) {
+        adapter.log.warn(`[Interfaces] "${participant.name}" hit the ${MAX_ACTIONS_PER_TURN}-action budget on "${iface.name}" without a reply; skipping turn`);
+        continue;
+      }
+
+      const content = await substituteVariables(finalText, userId, adapter, processId);
+      messages.push({
+        role: 'assistant', content, timestamp: new Date().toISOString(),
+        source: 'interfaces', model: participant.model,
+        interfaceId: iface.id, interfaceName: iface.name,
+        participantId: participant.id, participantName: participant.name,
+        debugPrompt: lastPrompt,
+      });
+      await adapter.db.run.update({ where: { id: runId }, data: { messages } });
+      adapter.emitRunUpdate(runId, { type: 'messages-update', messages, runId });
+
+      if (stopKeyword && content.includes(stopKeyword)) stopped = true;
+    }
+
+    const updatedRun = await adapter.db.run.update({
+      where: { id: runId },
+      data: {
+        messages, status: 'COMPLETED', completedAt: new Date(), model,
+        promptTokens: (run.promptTokens || 0) + accInputTokens,
+        completionTokens: (run.completionTokens || 0) + accOutputTokens,
+        totalTokens: (run.totalTokens || 0) + accTotalTokens,
+        cachedPromptTokens: (run.cachedPromptTokens || 0) + accCachedTokens,
+        reasoningTokens: (run.reasoningTokens || 0) + accReasoningTokens,
+        metadata: { ...(run.metadata as any || {}), isInterfacesRun: true },
+      },
+    });
+    adapter.emitRunUpdate(runId, { type: 'messages-update', messages, runId });
+    adapter.emitRunUpdate(runId, { type: 'status-update', status: 'COMPLETED', messages, runId });
+    adapter.emitRunListUpdate(userId, updatedRun);
+  } catch (err: any) {
+    adapter.log.error(`[Interfaces] executeInterfacesProcess failed: ${err?.message}`, err);
+    try {
+      if (run?.id) {
+        await adapter.db.run.update({ where: { id: runId }, data: { status: 'ERROR', completedAt: new Date(), error: err?.message } });
+      }
+      adapter.emitRunUpdate(runId, { type: 'status-update', status: 'ERROR', runId });
+      adapter.emitRunListUpdate(userId, { id: runId, status: 'ERROR' });
+    } catch { }
+  }
+}

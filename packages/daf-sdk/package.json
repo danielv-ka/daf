@@ -1,0 +1,68 @@
+{
+  "name": "daf-sdk",
+  "version": "2.0.0",
+  "description": "DAF (Defined Action Framework): protocol types and agentic execution runtime",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol/index.d.ts",
+      "import": "./dist/protocol/index.mjs",
+      "require": "./dist/protocol/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime/index.d.ts",
+      "import": "./dist/runtime/index.mjs",
+      "require": "./dist/runtime/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts src/protocol/index.ts src/runtime/index.ts --format cjs,esm --dts --clean",
+    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "daf",
+    "defined-action-framework",
+    "protocol",
+    "runtime",
+    "agentic",
+    "ai",
+    "automation"
+  ],
+  "author": "Prism",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danielv-ka/daf.git"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.35",
+    "tsup": "^8.0.1",
+    "typescript": "^5.3.3",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.49",
+    "@ai-sdk/deepseek": "^3.0.39",
+    "@ai-sdk/google": "^4.0.64",
+    "@ai-sdk/mistral": "^4.0.39",
+    "@ai-sdk/moonshotai": "^3.0.46",
+    "@ai-sdk/openai": "^4.0.59",
+    "@ai-sdk/xai": "^4.0.54",
+    "@notionhq/client": "^5.22.0",
+    "ai": "^7.0.37",
+    "googleapis": "^173.0.0",
+    "zod": "^4.3.6"
+  }
+}

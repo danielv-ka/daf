@@ -1,0 +1,37 @@
+{
+  "name": "daf-sdk-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DAF (Defined Action Framework), protocol types and agentic execution runtime",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace=daf-sdk",
+    "dev": "npm run dev --workspace=daf-sdk",
+    "typecheck": "npm run typecheck --workspace=daf-sdk",
+    "test": "npm run test --workspace=daf-sdk",
+    "clean": "rm -rf packages/*/dist packages/*/node_modules node_modules",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danielv-ka/daf.git"
+  },
+  "keywords": [
+    "prism",
+    "daf",
+    "automation",
+    "ai",
+    "sdk",
+    "typescript"
+  ],
+  "author": "Prism",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.19.35",
+    "tsup": "^8.0.1",
+    "typescript": "^5.3.3",
+    "vitest": "^3.2.4"
+  }
+}
