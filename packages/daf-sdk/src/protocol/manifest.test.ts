@@ -24,7 +24,7 @@ const sampleProcess = {
   steps: [
     { type: 'prompt', prompt: '$STARTERPROMPT', skipCompletion: true },
     { type: 'prompt', prompt: 'Please browse bild.de with the scrape website action and get its content' },
-    { type: 'prompt', prompt: 'Pick one news item, summarize it, and email it to someone@example.com' },
+    { type: 'prompt', prompt: 'Pick one news item, summarize it, and email it to rene@prismrun.ai' },
   ],
 };
 
