@@ -174,9 +174,10 @@ export async function resolveDataReferences(
       support = s;
     }
 
-    const label = `[Attached file: ${row.name}]`;
-    // Say the file is already in the conversation: a bare label next to the
-    // attachFile docs led models to try attaching it again instead of reading it.
+    // Both labels say the file is already in the conversation: bare labels next
+    // to the attachFile docs led models to try attaching it again instead of
+    // reading it.
+    const label = `[Attached file: ${row.name}. This message is the file itself, read it directly.]`;
     resolved = resolved.split(`$${row.id}`).join(`[Attached file: ${row.name}, included above]`);
     if (alreadyAttached.has(row.id)) continue;
     const parts: MessageContentPart[] = support === 'file'

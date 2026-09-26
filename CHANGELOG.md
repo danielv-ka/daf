@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-09-26
+
+### Fixed
+- **Models calling attachFile on a file they already had.** With a `$<resource id>` audio
+  file in chat, Gemini answered correctly only about 1 time in 6: it either called
+  attachFile on the file or said it couldn't read audio. attachFile's description now
+  says a file already in the conversation should be read directly, and lists audio and
+  video (Gemini) alongside images and PDFs, as does the `data` resource type. The
+  attachment message's own label now says it is the file itself. In the same test this
+  went to 12 out of 12.
+
 ## [2.4.0] - 2026-09-25
 
 ### Added

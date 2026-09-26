@@ -1017,7 +1017,7 @@ Reference this variable in your prompts when you need to know which resources ar
 
 **Resource Types:**
 - document: All document-based resources
-- data: Real file content (images, PDFs, etc.) stored directly on the resource, addressed by id, see readData/writeData/attachFile. Writing $ followed by a data resource's id in a prompt sends the actual file to the model with that prompt (images and PDFs where the model reads them natively, audio and video to Gemini models, text files as text)
+- data: Real file content (images, PDFs, audio, video, etc.) stored directly on the resource, addressed by id, see readData/writeData/attachFile. Writing $ followed by a data resource's id in a prompt sends the actual file to the model with that prompt (images and PDFs where the model reads them natively, audio and video to Gemini models, text files as text)
 
 **Providers:**
 - google_drive: Google Docs documents
@@ -1674,7 +1674,7 @@ Creates a copy of a data resource, including its content and media type. The cop
 *(Quotation marks added to escape execution - this is documentation only)*
 
 **Description:**
-Reads a file's real content instead of just extracting its text. Images and PDFs are read by the conversation's own model and come back as a thorough description: all visible text verbatim, plus a detailed description of any images, diagrams, or charts; if that model can't read the file's type, this returns an error saying so (tell the user to switch models, don't retry). Spreadsheets (an .xlsx file or a Google Sheet) come back as their exact contents instead: every sheet (hidden ones marked), raw full-precision values with row numbers and column letters, every formula with its last calculated result, comments, and merged cells; a very large sheet is cut off at a size limit and says so. Works on a \`data\` resource (real content stored directly on the resource) or a Google Drive resource (a Doc, Sheet, Slide, Excel file, or an already-uploaded PDF); a native Doc or Slide is exported to PDF and a native Sheet to .xlsx automatically, no extra step needed. Does not work on Notion resources, folders, databases, or local Markdown files, use readDocument, readFolder, or readDatabase for those instead.
+Reads a file's real content instead of just extracting its text. If the file is already in the conversation (a message labelled "[Attached file: name]" that carries the file itself, e.g. because the user wrote $ followed by its id), you already have it: read that copy and answer, don't call this. Images, PDFs, audio and video (audio and video on Gemini models only) are read by the conversation's own model and come back as a thorough description: all visible text verbatim, plus a detailed description of any images, diagrams, or charts; if that model can't read the file's type, this returns an error saying so (tell the user to switch models, don't retry). Spreadsheets (an .xlsx file or a Google Sheet) come back as their exact contents instead: every sheet (hidden ones marked), raw full-precision values with row numbers and column letters, every formula with its last calculated result, comments, and merged cells; a very large sheet is cut off at a size limit and says so. Works on a \`data\` resource (real content stored directly on the resource) or a Google Drive resource (a Doc, Sheet, Slide, Excel file, or an already-uploaded PDF); a native Doc or Slide is exported to PDF and a native Sheet to .xlsx automatically, no extra step needed. Does not work on Notion resources, folders, databases, or local Markdown files, use readDocument, readFolder, or readDatabase for those instead.
 
 **Parameters:**
 - \`id\` (string, required): The resource id (the id field from the resources list you were given, not its name or url)
@@ -1682,7 +1682,7 @@ Reads a file's real content instead of just extracting its text. Images and PDFs
 **Requirements:**
 - Only available on hosts that have wired up execution for this action; on others it returns a clear "not supported" error instead of doing anything.
 
-**Note:** For an image or PDF, when the conversation's own model can read that file type natively and the file is small enough (the host sets the limit), the real file also stays attached to the conversation, so later turns see the actual file, not just the description. Otherwise you only get the text description: treat it as the file's real content, and if a later question needs a visual detail it didn't cover, call this again rather than assuming the first description was exhaustive.`,
+**Note:** For an image, PDF, audio or video file, when the conversation's own model can read that file type natively and the file is small enough (the host sets the limit), the real file also stays attached to the conversation, so later turns see the actual file, not just the description. Otherwise you only get the text description: treat it as the file's real content, and if a later question needs a visual detail it didn't cover, call this again rather than assuming the first description was exhaustive.`,
 };
 
 // Generate DESC_EDITOR_ACTIONS by referencing individual editor action variables

@@ -1,6 +1,6 @@
 {
   "name": "daf-sdk",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "description": "DAF (Defined Action Framework): protocol types and agentic execution runtime",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
