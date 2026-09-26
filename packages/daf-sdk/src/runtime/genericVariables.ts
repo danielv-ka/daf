@@ -1017,7 +1017,7 @@ Reference this variable in your prompts when you need to know which resources ar
 
 **Resource Types:**
 - document: All document-based resources
-- data: Real file content (images, PDFs, etc.) stored directly on the resource, addressed by id, see readData/writeData/attachFile. Writing $ followed by a data resource's id in a prompt sends the actual file to the model with that prompt (images and PDFs where the model reads them natively, text files as text)
+- data: Real file content (images, PDFs, etc.) stored directly on the resource, addressed by id, see readData/writeData/attachFile. Writing $ followed by a data resource's id in a prompt sends the actual file to the model with that prompt (images and PDFs where the model reads them natively, audio and video to Gemini models, text files as text)
 
 **Providers:**
 - google_drive: Google Docs documents

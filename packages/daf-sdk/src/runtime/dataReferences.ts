@@ -33,8 +33,14 @@ import { getProviderFromModel } from './providers';
 // search tool for PDFs) that a plain file part does not reach.
 const NATIVE_IMAGE_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'mistral', 'xai', 'moonshot']);
 const NATIVE_PDF_PROVIDERS = new Set(['anthropic', 'google', 'openai']);
+// Audio and video: only Gemini reads both natively as plain file parts; the
+// others need a separate transcription or vision product.
+const NATIVE_AUDIO_PROVIDERS = new Set(['google']);
+const NATIVE_VIDEO_PROVIDERS = new Set(['google']);
 // Anthropic's per-image limit is the tightest of the providers above.
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
+// Audio and video only ever go to Gemini, whose inline request limit is 20MB.
+const MAX_AUDIO_VIDEO_BYTES = 15 * 1024 * 1024;
 const TEXT_MEDIA_TYPES = new Set(['text/plain', 'text/csv', 'text/markdown', 'text/html', 'application/json']);
 
 // Loose enough for cuid/cuid2/uuid-style ids, anchored on "$" so ordinary
@@ -42,7 +48,7 @@ const TEXT_MEDIA_TYPES = new Set(['text/plain', 'text/csv', 'text/markdown', 'te
 const REFERENCE_PATTERN = /\$([a-z0-9][a-z0-9_-]{15,})/gi;
 
 export interface DataReferenceResolution {
-  /** The text with each resolved `$id` replaced by an "[Attached file: name]" label. */
+  /** The text with each resolved `$id` replaced by an "[Attached file: name, included above]" label. */
   text: string;
   /** One hidden, model-visible message per referenced file, to add right before the prompt. */
   attachmentMessages: any[];
@@ -56,6 +62,8 @@ export function dataReferenceSupport(model: string, mediaType: string): 'file' |
   const provider = getProviderFromModel(model);
   if (mediaType.startsWith('image/')) return NATIVE_IMAGE_PROVIDERS.has(provider) ? 'file' : null;
   if (mediaType === 'application/pdf') return NATIVE_PDF_PROVIDERS.has(provider) ? 'file' : null;
+  if (mediaType.startsWith('audio/')) return NATIVE_AUDIO_PROVIDERS.has(provider) ? 'file' : null;
+  if (mediaType.startsWith('video/')) return NATIVE_VIDEO_PROVIDERS.has(provider) ? 'file' : null;
   return null;
 }
 
@@ -63,6 +71,7 @@ export function dataReferenceSupport(model: string, mediaType: string): 'file' |
 function mediaTypeKind(mediaType: string): 'file' | 'text' | null {
   if (TEXT_MEDIA_TYPES.has(mediaType) || mediaType.startsWith('text/')) return 'text';
   if (mediaType.startsWith('image/') || mediaType === 'application/pdf') return 'file';
+  if (mediaType.startsWith('audio/') || mediaType.startsWith('video/')) return 'file';
   return null;
 }
 
@@ -145,8 +154,9 @@ export async function resolveDataReferences(
       throw new DataReferenceError(`"${row.name}" ($${row.id}) has no stored content to send.`);
     }
     const bytes = Buffer.from(content, 'base64');
-    if (bytes.byteLength > MAX_FILE_BYTES) {
-      throw new DataReferenceError(`"${row.name}" is ${(bytes.byteLength / 1024 / 1024).toFixed(1)}MB, over the ${MAX_FILE_BYTES / 1024 / 1024}MB limit for sending a file with a prompt.`);
+    const maxBytes = mediaType.startsWith('audio/') || mediaType.startsWith('video/') ? MAX_AUDIO_VIDEO_BYTES : MAX_FILE_BYTES;
+    if (bytes.byteLength > maxBytes) {
+      throw new DataReferenceError(`"${row.name}" is ${(bytes.byteLength / 1024 / 1024).toFixed(1)}MB, over the ${maxBytes / 1024 / 1024}MB limit for sending a file with a prompt.`);
     }
     const readers = options.models ?? (options.model ? [options.model] : []);
     let support: 'file' | 'text' | null = null;
@@ -156,14 +166,18 @@ export async function resolveDataReferences(
       if (!s) {
         const hint = mediaType.includes('spreadsheet') || mediaType.includes('excel')
           ? ' No model reads spreadsheets directly: refer to it by name instead and let the model use attachFile, which reads it exactly.'
-          : ' Pick a model that can read this type (for example Claude, GPT, or Gemini).';
+          : mediaType.startsWith('audio/') || mediaType.startsWith('video/')
+            ? ' Pick a Gemini model, which reads audio and video.'
+            : ' Pick a model that can read this type (for example Claude, GPT, or Gemini).';
         throw new DataReferenceError(`${reader ?? 'No model'} can't read "${row.name}" (${mediaType}) directly.${hint}`);
       }
       support = s;
     }
 
     const label = `[Attached file: ${row.name}]`;
-    resolved = resolved.split(`$${row.id}`).join(label);
+    // Say the file is already in the conversation: a bare label next to the
+    // attachFile docs led models to try attaching it again instead of reading it.
+    resolved = resolved.split(`$${row.id}`).join(`[Attached file: ${row.name}, included above]`);
     if (alreadyAttached.has(row.id)) continue;
     const parts: MessageContentPart[] = support === 'file'
       ? [{ type: 'text', text: label }, { type: 'file', data: content, mediaType } as any]

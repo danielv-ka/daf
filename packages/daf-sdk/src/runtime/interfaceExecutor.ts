@@ -31,6 +31,9 @@ import type { DAFStorageAdapter, UserProviderSettings, ExecutionContext } from '
 import type { DAFInterfaceParticipant, DAFInterfaceDef } from '../protocol';
 
 const DEFAULT_MAX_STEPS = 200;
+// Providers whose participants get actions only as native tools, without
+// the long text catalog (see the prompt assembly in executeInterfacesProcess).
+const NATIVE_ACTIONS_ONLY_PROVIDERS = new Set(['anthropic', 'openai']);
 const MAX_ACTIONS_PER_TURN = 5;
 const PASS_KEYWORD = /^\s*PASS\s*$/i;
 
@@ -144,6 +147,24 @@ function pickRandomPair(
 // text block avoids any need to reconstruct per-participant role alternation
 // across a conversation that, from each participant's own view, is really N
 // interleaved conversations at once.
+// What a room that allows actions tells the participant about them.
+// `catalog` is the full action documentation (the JSON-convention fallback),
+// or null for models that get every action as a native tool and don't need
+// it repeated as text. `resources` lists the ids actions refer to, always.
+interface ParticipantActionsText {
+  catalog: string | null;
+  resources: string;
+}
+
+/**
+ * Builds a participant's turn as two parts, so the part that doesn't change
+ * between turns can be cached by the provider: `stable` (who they are, their
+ * own instructions, the actions and resources available) goes first and is
+ * identical on every turn of this participant in this kind of room; `turn`
+ * (the conversation so far and "speak in room X now") is what changes. Before
+ * this split the action catalog sat after the transcript and was resent at
+ * full price on every turn (~40k characters per turn).
+ */
 function buildParticipantPrompt(
   participant: InterfaceParticipant,
   targetInterface: InterfaceDef,
@@ -151,8 +172,8 @@ function buildParticipantPrompt(
   history: InterfaceMessage[],
   // null for a 'text' room: no actions section at all, not even a mention
   // that actions exist, the model never knows they were an option here.
-  actionCatalogText: string | null
-): string {
+  actions: ParticipantActionsText | null
+): { stable: string; turn: string } {
   const ownInterfaces = allInterfaces.filter((i) => participant.interfaceIds.includes(i.id));
   const ownInterfaceNames = ownInterfaces.map((i) => i.name).join(', ');
 
@@ -161,40 +182,49 @@ function buildParticipantPrompt(
     .map((m) => `[${m.interfaceName}] ${m.participantName}: ${m.content}`)
     .join('\n');
 
-  const lines: string[] = [];
-  lines.push(
+  const stable: string[] = [
     `You are "${participant.name}", one of several participants in a multi-room conversation. ` +
     `You are a member of these interfaces (rooms): ${ownInterfaceNames}. ` +
-    `Each line below is tagged with the room it was said in, in the form "[Room] Speaker: message". ` +
-    `You can only see rooms you belong to.`
-  );
+    `Each line of the conversation is tagged with the room it was said in, in the form "[Room] Speaker: message". ` +
+    `You can only see rooms you belong to.`,
+  ];
   if (participant.starterPrompt?.trim()) {
-    lines.push(`\nYour own instructions: ${participant.starterPrompt.trim()}`);
+    stable.push(`\nYour own instructions: ${participant.starterPrompt.trim()}`);
   }
-  lines.push(
-    transcript
-      ? `\nConversation so far:\n${transcript}`
-      : `\nConversation so far: (nothing said yet)`
-  );
-  if (actionCatalogText !== null) {
-    lines.push(
-      `\nYou also have access to actions. To call one, reply with ONLY a JSON object of the form ` +
-      `{"type":"action","variant":"<name>","parameters":{...}}, nothing else. If you already called one and ` +
-      `its result appears above, use that result rather than calling it again.\n\n${actionCatalogText}`
-    );
-    lines.push(
-      `\nYou are now being asked to speak in "${targetInterface.name}". Reply with EXACTLY ONE of: (a) a single ` +
-      `action-call JSON object, (b) only the message you want to add to that room, nothing else, no tags, no ` +
-      `room name, or (c) if you have nothing to add this round, exactly: PASS`
+  if (actions) {
+    if (actions.catalog !== null) {
+      stable.push(
+        `\nYou also have access to actions. To call one, reply with ONLY a JSON object of the form ` +
+        `{"type":"action","variant":"<name>","parameters":{...}}, nothing else. If you already called one and ` +
+        `its result appears in the conversation, use that result rather than calling it again.\n\n${actions.catalog}`
+      );
+    } else {
+      stable.push(
+        `\nYou also have access to actions, provided as tools: call a tool directly when you need one. If you ` +
+        `already called one and its result appears in the conversation, use that result rather than calling it again.`
+      );
+    }
+    stable.push(`\n${actions.resources}`);
+  }
+
+  const turn: string[] = [
+    transcript ? `Conversation so far:\n${transcript}` : `Conversation so far: (nothing said yet)`,
+  ];
+  if (actions) {
+    const callOption = actions.catalog !== null ? 'a single action-call JSON object' : 'a tool call';
+    turn.push(
+      `\nYou are now being asked to speak in "${targetInterface.name}". Reply with EXACTLY ONE of: (a) ${callOption}, ` +
+      `(b) only the message you want to add to that room, nothing else, no tags, no room name, or (c) if you ` +
+      `have nothing to add this round, exactly: PASS`
     );
   } else {
-    lines.push(
+    turn.push(
       `\nYou are now being asked to speak in "${targetInterface.name}". Reply with EXACTLY ONE of: (a) only the ` +
       `message you want to add to that room, nothing else, no tags, no room name, or (b) if you have nothing to ` +
       `add this round, exactly: PASS`
     );
   }
-  return lines.join('\n');
+  return { stable: stable.join('\n'), turn: turn.join('\n') };
 }
 
 /**
@@ -308,12 +338,8 @@ export async function executeInterfacesProcess(
     // Resolved once, not per-turn: the transcript is rebuilt from scratch every
     // call, and substituteVariables's $VAR regex would needlessly re-scan it and
     // could false-match a participant's own dialogue (e.g. literal "$Total").
-    const actionCatalogText = await substituteVariables(
-      `$DESC_ALL_ACTIONS\n\n---\n\nAvailable resources:\n$RESOURCES`,
-      userId,
-      adapter,
-      processId
-    );
+    const actionCatalogText = await substituteVariables('$DESC_ALL_ACTIONS', userId, adapter, processId);
+    const resourcesText = await substituteVariables('Available resources:\n$RESOURCES', userId, adapter, processId);
 
     const messages: any[] = Array.isArray(run.messages) ? [...run.messages] : [];
     const sequence = buildSequence(participants, interfaces, order);
@@ -416,15 +442,25 @@ export async function executeInterfacesProcess(
         // action-result messages pushed earlier this turn, since they carry a
         // real interfaceId and pass this same history filter like any other
         // room message.
-        const prompt = buildParticipantPrompt(participant, iface, interfaces, messages, roomAllowsActions ? actionCatalogText : null);
-        lastPrompt = prompt;
+        // Claude and GPT get every action as a native tool (with its
+        // description) and use tools reliably, so the ~40k-character text
+        // catalog would only repeat them. Other models keep it as the
+        // JSON-convention fallback, in the cached stable part.
+        const nativeActionsOnly = NATIVE_ACTIONS_ONLY_PROVIDERS.has(getProviderFromModel(participant.model));
+        const { stable, turn } = buildParticipantPrompt(
+          participant, iface, interfaces, messages,
+          roomAllowsActions ? { catalog: nativeActionsOnly ? null : actionCatalogText, resources: resourcesText } : null,
+        );
+        lastPrompt = `${stable}\n\n${turn}`;
         let ourOwnTools: ReturnType<typeof buildActionTools> = {};
         let tools: any = undefined;
-        // Files from this participant's data rooms go first, then the prompt
-        // (which ends with "you are now being asked to speak in ...").
+        // The stable part first, marked as a cache point for Claude (OpenAI and
+        // Gemini cache a repeated prefix on their own). Then this participant's
+        // room files, then the conversation and "speak in room X now".
         const fileParts = collectRoomFiles(participant, interfaces, messages);
         let promptMessages: Array<{ role: 'user'; content: any }> = [
-          { role: 'user', content: fileParts.length > 0 ? [...fileParts, { type: 'text', text: prompt }] : prompt },
+          { role: 'user', content: [{ type: 'text', text: stable, providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } } }] },
+          { role: 'user', content: fileParts.length > 0 ? [...fileParts, { type: 'text', text: turn }] : turn },
         ];
         if (roomAllowsActions) {
           const nativeReplaced = getNativeReplacedActions(participant.model);
@@ -472,7 +508,7 @@ export async function executeInterfacesProcess(
           const toolResult = (llmResult.toolResults || []).find((tr: any) => tr.toolCallId === call.toolCallId);
           const formatted = formatNativeProviderResult(call.toolName, toolResult?.output);
           const ar: ActionResult = { success: true, message: formatted };
-          messages.push(buildInterfaceActionMsg(ar, participant, iface, Date.now() - turnStart, prompt));
+          messages.push(buildInterfaceActionMsg(ar, participant, iface, Date.now() - turnStart, lastPrompt));
           actedThisIteration = true;
         }
 
@@ -484,7 +520,7 @@ export async function executeInterfacesProcess(
         const actionResult = await processMessageActions(rawText, userId, adapter, processId, [], executionContext, preParsed as any);
         if (actionResult.hasActions && actionResult.actionResults.length > 0) {
           for (const ar of actionResult.actionResults) {
-            messages.push(buildInterfaceActionMsg(ar, participant, iface, Date.now() - turnStart, prompt));
+            messages.push(buildInterfaceActionMsg(ar, participant, iface, Date.now() - turnStart, lastPrompt));
           }
           actedThisIteration = true;
         }

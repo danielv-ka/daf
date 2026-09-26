@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-09-25
+
+### Added
+- **Audio and video data resources for Gemini models.** A `$<resource id>` reference (or
+  attachFile) to an `audio/*` or `video/*` data resource now sends the file natively when
+  the model is Gemini, up to 15MB. Other models get a clear error that says to pick a
+  Gemini model.
+
+### Changed
+- **Smaller, cached Interfaces prompts.** Each participant's prompt is split into a stable
+  part (instructions, actions, resources), marked for Anthropic prompt caching and reused
+  as a prefix by OpenAI and Gemini, and a per-turn part (transcript, which room to speak
+  in). Claude and GPT participants no longer get the roughly 40k character text catalog of
+  actions, since they already get every action as a native tool with its description. In a
+  two room, two participant test run this cut total tokens from 88,069 to 27,302.
+- A resolved `$<resource id>` now reads "[Attached file: name, included above]" in the
+  prompt. With the bare label, models sometimes called attachFile on the file instead of
+  reading the copy they already had.
+
 ## [2.3.0] - 2026-09-25
 
 ### Added

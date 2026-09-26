@@ -37,7 +37,7 @@ describe('resolveDataReferences', () => {
 
   it('replaces an image reference with a label and attaches the real file', async () => {
     const r = await resolveDataReferences(`Describe this. $${PNG_ID}`, { ...base, model: 'claude-sonnet-5' });
-    expect(r.text).toBe('Describe this. [Attached file: chart.png]');
+    expect(r.text).toBe('Describe this. [Attached file: chart.png, included above]');
     expect(r.attachmentMessages).toHaveLength(1);
     const msg = r.attachmentMessages[0];
     expect(msg.isFileAttachment).toBe(true);
@@ -72,7 +72,7 @@ describe('resolveDataReferences', () => {
   it('does not attach the same file twice in one run', async () => {
     const existingMessages = [{ role: 'user', isFileAttachment: true, sourceResourceId: PNG_ID, content: [] }];
     const r = await resolveDataReferences(`Again: $${PNG_ID}`, { ...base, model: 'claude-sonnet-5', existingMessages });
-    expect(r.text).toBe('Again: [Attached file: chart.png]');
+    expect(r.text).toBe('Again: [Attached file: chart.png, included above]');
     expect(r.attachmentMessages).toEqual([]);
   });
 });
@@ -102,5 +102,12 @@ describe('dataReferenceSupport', () => {
     expect(dataReferenceSupport('kimi-k3', 'image/png')).toBe('file');
     expect(dataReferenceSupport('deepseek-chat', 'image/png')).toBeNull();
     expect(dataReferenceSupport('deepseek-chat', 'text/csv')).toBe('text');
+  });
+
+  it('sends audio and video to Gemini only', () => {
+    expect(dataReferenceSupport('gemini-2.5-flash', 'audio/mpeg')).toBe('file');
+    expect(dataReferenceSupport('gemini-2.5-flash', 'video/mp4')).toBe('file');
+    expect(dataReferenceSupport('claude-sonnet-5', 'audio/mpeg')).toBeNull();
+    expect(dataReferenceSupport('gpt-5.1', 'video/mp4')).toBeNull();
   });
 });
