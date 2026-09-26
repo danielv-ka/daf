@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-09-25
+
+### Added
+- **Interfaces processes in the DAF format.** `INTERFACES_PROCESS` is now a process type,
+  with `interfaceParticipants`, `interfaceDefs` (rooms, `type` `text` or `text+data`),
+  `interfaceExecutionOrder`, `interfaceMaxSteps`, and `targetInterfaceId` on steps, all part
+  of the process definition, so they appear and are validated in both process definition
+  files and manifests. Until now they were only understood by the runtime and one host,
+  which had to slip them past validation, so nothing checked them.
+- Validation for Interfaces processes: at least one room and one participant, unique ids,
+  and every participant, room and step pointing at ids that exist. Interfaces fields on
+  any other process type are rejected.
+- `INTERFACE_TYPES`, `INTERFACE_EXECUTION_ORDERS`, `INTERFACE_SYSTEM_MODEL` constants, and
+  `DAFInterfaceParticipant` / `DAFInterfaceDef` types. The runtime's `InterfaceParticipant`
+  and `InterfaceDef` are now aliases of these.
+
+### Changed
+- `stopProcessKeyword` is accepted on `INTERFACES_PROCESS` as well as
+  `ADVANCED_DIALOGUE` (still rejected on `STATIC_DIALOGUE`).
+
 ## [2.2.0] - 2026-09-25
 
 ### Added

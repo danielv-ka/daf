@@ -228,3 +228,88 @@ describe('portable resource references', () => {
     expect(validateManifestFile(old).valid).toBe(true);
   });
 });
+
+describe('Interfaces processes', () => {
+  const debate = () => ({
+    name: 'Framework debate',
+    processType: 'INTERFACES_PROCESS',
+    stopProcessKeyword: 'DONE',
+    interfaceParticipants: [
+      { id: 'p0', name: 'System', model: 'system', interfaceIds: ['A', 'B'] },
+      { id: 'p1', name: 'Debater', model: 'claude-haiku-4-5', interfaceIds: ['A'], starterPrompt: 'Argue for React.' },
+    ],
+    interfaceDefs: [
+      { id: 'A', name: 'Room A', participantIds: ['p0', 'p1'], type: 'text+data' },
+      { id: 'B', name: 'Room B', participantIds: ['p0'], type: 'text' },
+    ],
+    interfaceExecutionOrder: 'ROUND_ROBIN_INTERFACE_FIRST',
+    interfaceMaxSteps: 200,
+    steps: [{ type: 'prompt', prompt: 'Discuss the best web framework.', targetInterfaceId: 'A' }],
+  });
+  const asFile = (process: any) => ({ dafVersion: DAF_V2_VERSION, dafType: 'process', processes: [process] });
+  const errors = (process: any) => validateProcessDefinitionFile(asFile(process)).errors?.map((e: any) => e.message).join(' | ') ?? '';
+
+  it('accepts a valid Interfaces process in a process definition and keeps every field', () => {
+    const parsed = parseDafFile(asFile(debate())) as any;
+    expect(parsed.processes[0]).toMatchObject({
+      processType: 'INTERFACES_PROCESS',
+      stopProcessKeyword: 'DONE',
+      interfaceDefs: [{ id: 'A', type: 'text+data' }, { id: 'B', type: 'text' }],
+      interfaceExecutionOrder: 'ROUND_ROBIN_INTERFACE_FIRST',
+      interfaceMaxSteps: 200,
+    });
+    expect(parsed.processes[0].interfaceParticipants[1].starterPrompt).toBe('Argue for React.');
+    expect(parsed.processes[0].steps[0].targetInterfaceId).toBe('A');
+  });
+
+  it('accepts it in a manifest too', () => {
+    const manifest = { dafVersion: DAF_V2_VERSION, dafType: 'manifest', variables: { user: {}, system: {} }, resources: [], actions: [], processes: [debate()] };
+    expect(validateManifestFile(manifest).valid).toBe(true);
+  });
+
+  it('treats a room without a type as valid (Text + Data by default)', () => {
+    const p = debate(); delete (p.interfaceDefs[0] as any).type;
+    expect(validateProcessDefinitionFile(asFile(p)).valid).toBe(true);
+  });
+
+  it('rejects an unknown room type', () => {
+    const p = debate(); (p.interfaceDefs[0] as any).type = 'text-data';
+    expect(validateProcessDefinitionFile(asFile(p)).valid).toBe(false);
+  });
+
+  it('rejects a step that targets a room that does not exist, or no room at all', () => {
+    const wrong = debate(); wrong.steps[0].targetInterfaceId = 'Z';
+    expect(errors(wrong)).toContain('Step targets unknown interface "Z"');
+    const missing = debate(); delete (missing.steps[0] as any).targetInterfaceId;
+    expect(errors(missing)).toContain('needs a targetInterfaceId');
+  });
+
+  it('rejects participants and rooms that point at each other wrongly', () => {
+    const p = debate(); p.interfaceParticipants[1].interfaceIds = ['A', 'Z'];
+    expect(errors(p)).toContain('unknown interface "Z"');
+    const r = debate(); r.interfaceDefs[1].participantIds = ['p9'];
+    expect(errors(r)).toContain('unknown participant "p9"');
+  });
+
+  it('rejects duplicate ids and empty rooms or participants', () => {
+    const dup = debate(); dup.interfaceDefs[1].id = 'A';
+    expect(errors(dup)).toContain('Duplicate interface id "A"');
+    const empty = debate(); empty.interfaceDefs = []; empty.interfaceParticipants = [];
+    const msg = errors(empty);
+    expect(msg).toContain('at least one interface');
+    expect(msg).toContain('at least one participant');
+  });
+
+  it('rejects Interfaces fields on other process types', () => {
+    const p = { ...sampleProcess, interfaceDefs: [{ id: 'A', name: 'Room A', participantIds: [] }] };
+    expect(errors(p)).toContain('only valid for INTERFACES_PROCESS');
+    const step = { ...sampleProcess, steps: [{ type: 'prompt', prompt: 'hi', targetInterfaceId: 'A' }] };
+    expect(errors(step)).toContain('targetInterfaceId is only valid');
+  });
+
+  it('allows a stop keyword on Interfaces and advanced dialogues, not on static ones', () => {
+    expect(validateProcessDefinitionFile(asFile(debate())).valid).toBe(true);
+    const staticWithStop = { ...sampleProcess, processType: 'STATIC_DIALOGUE', stopProcessKeyword: 'X' };
+    expect(errors(staticWithStop)).toContain('stopProcessKeyword is only valid');
+  });
+});

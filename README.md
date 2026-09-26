@@ -68,6 +68,16 @@ const doc = new DAFDocumentBuilder()
 const { valid, errors } = validateDAFDocument(doc);
 ```
 
+**Process types.** A process is one of:
+- `STATIC_DIALOGUE`: runs its steps in order, once.
+- `ADVANCED_DIALOGUE`: adds loops and a `stopProcessKeyword` that ends the run.
+- `INTERFACES_PROCESS`: several participants (models, plus a `system` participant that
+  posts the process steps) talk in one or more rooms. It adds `interfaceParticipants`,
+  `interfaceDefs` (rooms; `type` is `text` for conversation only, or `text+data`, the
+  default, for actions and real files), `interfaceExecutionOrder`, `interfaceMaxSteps`,
+  and a `targetInterfaceId` on each step. The schema checks that every participant,
+  room and step points at ids that exist.
+
 ### 2. Execute it
 
 ```typescript

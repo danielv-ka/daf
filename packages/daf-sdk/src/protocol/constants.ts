@@ -24,7 +24,30 @@ export const DAF_FILE_TYPES = {
 export const PROCESS_TYPES = {
   STATIC_DIALOGUE: 'STATIC_DIALOGUE',
   ADVANCED_DIALOGUE: 'ADVANCED_DIALOGUE',
+  // Several participants (models) talking in one or more rooms (interfaces);
+  // see DAFInterfaceDef / DAFInterfaceParticipant.
+  INTERFACES_PROCESS: 'INTERFACES_PROCESS',
 } as const;
+
+/**
+ * Interfaces processes: what a room (interface) carries. 'text' rooms are
+ * conversation only; 'text+data' rooms (the default) also give participants
+ * actions and real files.
+ */
+export const INTERFACE_TYPES = {
+  TEXT: 'text',
+  TEXT_AND_DATA: 'text+data',
+} as const;
+
+/** Interfaces processes: the order in which participants are asked to speak. */
+export const INTERFACE_EXECUTION_ORDERS = {
+  RANDOM: 'RANDOM',
+  ROUND_ROBIN_INTERFACE_FIRST: 'ROUND_ROBIN_INTERFACE_FIRST',
+  ROUND_ROBIN_PARTICIPANT_FIRST: 'ROUND_ROBIN_PARTICIPANT_FIRST',
+} as const;
+
+/** Interfaces processes: the participant id convention and model for the process engine itself. */
+export const INTERFACE_SYSTEM_MODEL = 'system';
 
 /**
  * Step types

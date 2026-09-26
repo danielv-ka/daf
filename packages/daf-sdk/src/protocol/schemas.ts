@@ -13,6 +13,8 @@ import {
   RESOURCE_TYPES,
   WRITE_OPERATIONS,
   DAF_FILE_TYPES,
+  INTERFACE_TYPES,
+  INTERFACE_EXECUTION_ORDERS,
 } from './constants';
 
 // ============================================================================
@@ -65,6 +67,9 @@ export const stepSchema = z.object({
 
   // Advanced dialogue options
   skipCompletion: z.boolean().optional(),
+
+  // INTERFACES_PROCESS only: the room (interface id) this step is posted to.
+  targetInterfaceId: z.string().min(1).optional(),
 }).refine(
   (data) => {
     // Validate prompt step has prompt
@@ -94,31 +99,123 @@ export const stepSchema = z.object({
 // Process Schema
 // ============================================================================
 
+// INTERFACES_PROCESS rooms and participants. Ids are local to the process;
+// the cross-references between them are checked in processSchema below.
+export const interfaceParticipantSchema = z.object({
+  id: z.string().min(1, 'Participant id is required'),
+  name: z.string().min(1, 'Participant name is required'),
+  // A model id, or 'system' for the process engine (Participant 0).
+  model: z.string().min(1, 'Participant model is required'),
+  interfaceIds: z.array(z.string().min(1)),
+  starterPrompt: z.string().optional(),
+});
+
+export const interfaceDefSchema = z.object({
+  id: z.string().min(1, 'Interface id is required'),
+  name: z.string().min(1, 'Interface name is required'),
+  participantIds: z.array(z.string().min(1)),
+  type: z.enum([INTERFACE_TYPES.TEXT, INTERFACE_TYPES.TEXT_AND_DATA]).optional(),
+});
+
+const INTERFACE_FIELDS = ['interfaceParticipants', 'interfaceDefs', 'interfaceExecutionOrder', 'interfaceMaxSteps'] as const;
+
 export const processSchema = z.object({
   name: z.string().min(1, 'Process name is required'),
   description: z.string().optional(),
   processType: z.enum([
     PROCESS_TYPES.STATIC_DIALOGUE,
     PROCESS_TYPES.ADVANCED_DIALOGUE,
+    PROCESS_TYPES.INTERFACES_PROCESS,
   ]),
   stopProcessKeyword: z.string().optional(),
   resources: z.array(resourceSchema).optional(),
   // Manifests only: the `ref` of each manifest resource attached to this
   // process, so an import can re-attach them (see manifestResourceSchema).
   resourceRefs: z.array(z.string().min(1)).optional(),
+  // INTERFACES_PROCESS only
+  interfaceParticipants: z.array(interfaceParticipantSchema).optional(),
+  interfaceDefs: z.array(interfaceDefSchema).optional(),
+  interfaceExecutionOrder: z.enum([
+    INTERFACE_EXECUTION_ORDERS.RANDOM,
+    INTERFACE_EXECUTION_ORDERS.ROUND_ROBIN_INTERFACE_FIRST,
+    INTERFACE_EXECUTION_ORDERS.ROUND_ROBIN_PARTICIPANT_FIRST,
+  ]).optional(),
+  interfaceMaxSteps: z.int().min(1).max(1000).optional(),
   steps: z.array(stepSchema).min(1, 'Process must have at least one step'),
-}).refine(
-  (data) => {
-    // stopProcessKeyword only valid for ADVANCED_DIALOGUE
-    if (data.stopProcessKeyword && data.processType !== PROCESS_TYPES.ADVANCED_DIALOGUE) {
-      return false;
-    }
-    return true;
-  },
-  {
-    error: 'stopProcessKeyword is only valid for ADVANCED_DIALOGUE processes'
+}).superRefine((data, ctx) => {
+  const isInterfaces = data.processType === PROCESS_TYPES.INTERFACES_PROCESS;
+
+  // A stop keyword ends the whole run: meaningful for advanced dialogues and
+  // Interfaces processes, not for a static dialogue that runs once.
+  if (data.stopProcessKeyword && data.processType === PROCESS_TYPES.STATIC_DIALOGUE) {
+    ctx.addIssue({
+      code: 'custom', path: ['stopProcessKeyword'],
+      message: 'stopProcessKeyword is only valid for ADVANCED_DIALOGUE and INTERFACES_PROCESS processes',
+    });
   }
-);
+
+  if (!isInterfaces) {
+    for (const field of INTERFACE_FIELDS) {
+      if (data[field] !== undefined) {
+        ctx.addIssue({ code: 'custom', path: [field], message: `${field} is only valid for INTERFACES_PROCESS processes` });
+      }
+    }
+    data.steps.forEach((step, i) => {
+      if (step.targetInterfaceId !== undefined) {
+        ctx.addIssue({ code: 'custom', path: ['steps', i, 'targetInterfaceId'], message: 'targetInterfaceId is only valid in INTERFACES_PROCESS processes' });
+      }
+    });
+    return;
+  }
+
+  // Interfaces: at least one room and one participant, unique ids, and every
+  // cross-reference (participant <-> room, step -> room) pointing at something
+  // that exists. These are exactly the mistakes that otherwise only show up
+  // when the process runs (a step that never fires, a participant in no room).
+  const participants = data.interfaceParticipants ?? [];
+  const rooms = data.interfaceDefs ?? [];
+  if (rooms.length === 0) {
+    ctx.addIssue({ code: 'custom', path: ['interfaceDefs'], message: 'An Interfaces process needs at least one interface' });
+  }
+  if (participants.length === 0) {
+    ctx.addIssue({ code: 'custom', path: ['interfaceParticipants'], message: 'An Interfaces process needs at least one participant' });
+  }
+
+  const roomIds = new Set<string>();
+  rooms.forEach((r, i) => {
+    if (roomIds.has(r.id)) ctx.addIssue({ code: 'custom', path: ['interfaceDefs', i, 'id'], message: `Duplicate interface id "${r.id}"` });
+    roomIds.add(r.id);
+  });
+  const participantIds = new Set<string>();
+  participants.forEach((p, i) => {
+    if (participantIds.has(p.id)) ctx.addIssue({ code: 'custom', path: ['interfaceParticipants', i, 'id'], message: `Duplicate participant id "${p.id}"` });
+    participantIds.add(p.id);
+  });
+
+  participants.forEach((p, i) => {
+    p.interfaceIds.forEach((id, j) => {
+      if (!roomIds.has(id)) {
+        ctx.addIssue({ code: 'custom', path: ['interfaceParticipants', i, 'interfaceIds', j], message: `Participant "${p.name}" is in unknown interface "${id}"` });
+      }
+    });
+  });
+  rooms.forEach((r, i) => {
+    r.participantIds.forEach((id, j) => {
+      if (!participantIds.has(id)) {
+        ctx.addIssue({ code: 'custom', path: ['interfaceDefs', i, 'participantIds', j], message: `Interface "${r.name}" lists unknown participant "${id}"` });
+      }
+    });
+  });
+
+  data.steps.forEach((step, i) => {
+    if (step.type !== STEP_TYPES.PROMPT) return;
+    if (!step.targetInterfaceId) {
+      ctx.addIssue({ code: 'custom', path: ['steps', i, 'targetInterfaceId'], message: 'Each step of an Interfaces process needs a targetInterfaceId' });
+    } else if (!roomIds.has(step.targetInterfaceId)) {
+      ctx.addIssue({ code: 'custom', path: ['steps', i, 'targetInterfaceId'], message: `Step targets unknown interface "${step.targetInterfaceId}"` });
+    }
+  });
+});
 
 // ============================================================================
 // DAF Document Schema

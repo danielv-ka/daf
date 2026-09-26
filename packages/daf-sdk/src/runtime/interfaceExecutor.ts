@@ -28,30 +28,20 @@ import {
 import { calculateTokenCost } from './pricing';
 import { resolveDataReferences, dataReferenceSupport } from './dataReferences';
 import type { DAFStorageAdapter, UserProviderSettings, ExecutionContext } from './types';
+import type { DAFInterfaceParticipant, DAFInterfaceDef } from '../protocol';
 
 const DEFAULT_MAX_STEPS = 200;
 const MAX_ACTIONS_PER_TURN = 5;
 const PASS_KEYWORD = /^\s*PASS\s*$/i;
 
-export interface InterfaceParticipant {
-  id: string;
-  name: string;
-  model: string; // 'system' for Participant 0 (the process engine), a real model id otherwise
-  interfaceIds: string[];
-  starterPrompt?: string;
-}
-
-export interface InterfaceDef {
-  id: string;
-  name: string;
-  participantIds: string[];
-  // 'text+data' (the default when absent, so every process built before this
-  // field existed keeps behaving exactly as before) offers the full action
-  // catalog, including attachFile. 'text' rooms never see or can call any
-  // action at all, no catalog text, no tools, no inner action loop, kept
-  // as a cheap, purely-conversational option for rooms that don't need it.
-  type?: 'text' | 'text+data';
-}
+// Rooms and participants are part of the DAF format (see protocol types
+// DAFInterfaceParticipant / DAFInterfaceDef and their schemas); these names
+// are kept for existing callers. A room with no `type` is 'text+data', so
+// every process built before the field existed keeps behaving the same:
+// 'text+data' rooms get the action catalog, tools and real files, 'text'
+// rooms are conversation only (no catalog text, no tools, no action loop).
+export type InterfaceParticipant = DAFInterfaceParticipant;
+export type InterfaceDef = DAFInterfaceDef;
 
 export interface InterfaceAttachment {
   resourceId: string;

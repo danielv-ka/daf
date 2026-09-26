@@ -157,7 +157,34 @@ export interface DAFResource {
 // Processes
 // ============================================================================
 
-export type ProcessType = 'STATIC_DIALOGUE' | 'ADVANCED_DIALOGUE';
+export type ProcessType = 'STATIC_DIALOGUE' | 'ADVANCED_DIALOGUE' | 'INTERFACES_PROCESS';
+
+/** 'text' rooms are conversation only; 'text+data' (the default) also get actions and real files. */
+export type DAFInterfaceType = 'text' | 'text+data';
+
+export type DAFInterfaceExecutionOrder = 'RANDOM' | 'ROUND_ROBIN_INTERFACE_FIRST' | 'ROUND_ROBIN_PARTICIPANT_FIRST';
+
+/** A participant of an Interfaces process: a model, or the process engine itself (model 'system'). */
+export interface DAFInterfaceParticipant {
+  id: string;
+  name: string;
+  /** A model id, or 'system' for the process engine (Participant 0), which posts the process steps. */
+  model: string;
+  /** Ids of the rooms this participant belongs to. */
+  interfaceIds: string[];
+  /** Optional instructions given only to this participant. */
+  starterPrompt?: string;
+}
+
+/** A room (interface) of an Interfaces process. */
+export interface DAFInterfaceDef {
+  id: string;
+  name: string;
+  /** Ids of the participants in this room. */
+  participantIds: string[];
+  /** Defaults to 'text+data' when absent. */
+  type?: DAFInterfaceType;
+}
 
 export interface DAFProcess {
   name: string;
@@ -167,6 +194,13 @@ export interface DAFProcess {
   resources?: DAFResource[];
   /** Manifests only: the `ref`s of the manifest resources attached to this process. */
   resourceRefs?: string[];
+  // INTERFACES_PROCESS only
+  interfaceParticipants?: DAFInterfaceParticipant[];
+  interfaceDefs?: DAFInterfaceDef[];
+  /** Defaults to ROUND_ROBIN_INTERFACE_FIRST. */
+  interfaceExecutionOrder?: DAFInterfaceExecutionOrder;
+  /** Hard cap on total turns; defaults to 200. */
+  interfaceMaxSteps?: number;
   steps: DAFStep[];
 }
 
@@ -196,6 +230,9 @@ export interface DAFStep {
 
   // Advanced dialogue options
   skipCompletion?: boolean;
+
+  /** INTERFACES_PROCESS only: the room (interface id) this step is posted to. */
+  targetInterfaceId?: string;
 }
 
 // ============================================================================
